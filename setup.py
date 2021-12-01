@@ -15,22 +15,17 @@
 
 import os
 import sys
-import imp
 import hashlib
 import sysconfig
-import subprocess
 from os.path import join
 from distutils.core import setup, Extension, Command
 from distutils.dist import Distribution
 from distutils.command.build import build
 from distutils.command.build_ext import build_ext
 from distutils.command.install import install
-from src.config import DEFAULT_KEY, TEST_DIR, SRC_DIR, PY_SRC_DIR, EXT_SRC_DIR, EXE_SRC_DIR, SECRET_HEADER_PATH
+from src.config import TEST_DIR, SRC_DIR, EXT_SRC_DIR, EXE_SRC_DIR, SECRET_HEADER_PATH
 
-version_mod = imp.load_source('version', join(PY_SRC_DIR, 'version.py'))
-version = version_mod.__version__
-
-PY2 = sys.version_info.major < 3
+version = '0.13.0'
 
 
 # .rst should created by pyconcrete-admin
@@ -41,40 +36,9 @@ else:
 with open(readme_path, 'r') as f:
     readme = f.read()
 
-try:
-   input = raw_input
-except NameError:
-   pass
-
-
-def is_mingw():
-    """Compiler is mingw."""
-    dst = Distribution()
-    dst.parse_config_files()
-    if 'build' not in dst.command_options:
-        return False
-    _build = dst.command_options['build']
-    if 'compiler' not in _build:
-        return False
-    compiler = _build['compiler']
-    if compiler[1].startswith('mingw'):
-        return True
-    return False
-
-
-def is_msvc():
-    return sys.platform == 'win32' and not is_mingw()
-
-
-def is_mac():
-    return sys.platform == 'darwin'
-
 
 def hash_key(key):
-    if PY2:
-        factor = sum([ord(s) for s in key])
-    else:
-        factor = sum([s for s in key])
+    factor = sum([s for s in key])
     factor %= 128
     if factor < 16:
         factor += 16
@@ -93,8 +57,7 @@ def create_secret_key_header(key, factor):
 
     key_val_lst = []
     for i, k in enumerate(key):
-        n = ord(k) if PY2 else k
-        key_val_lst.append("(0x%X ^ (0x%X - %d))" % (n, factor, i))
+        key_val_lst.append("(0x%X ^ (0x%X - %d))" % (k, factor, i))
     key_val_code = ", ".join(key_val_lst)
 
     code = """
@@ -272,12 +235,8 @@ class InstallEx(CmdBase, install):
         print('creating %s' % filename)
 
     def install_exe(self):
-        if sys.platform == 'win32':
-            # install `pyconcrete.exe` to %PYTHON%/Scripts
-            exe_name = 'pyconcrete.exe'
-        else:
-            # install `pyconcrete` to /usr/local/bin
-            exe_name = 'pyconcrete'
+        # install `pyconcrete` to /usr/local/bin
+        exe_name = 'pyconcrete'
         self.copy_file(os.path.join(self.build_scripts, exe_name),
                        os.path.join(self.install_scripts, exe_name))
 
@@ -307,49 +266,27 @@ def get_include_dirs():
         join(EXT_SRC_DIR),
         join(EXT_SRC_DIR, 'openaes', 'inc'),
     ]
-    if is_msvc() and PY2:  # Only Python 2.7 & 3.2 Need VisualStudio 2008 (without stdint.h)
-        openaes_include_dirs.append(join(EXT_SRC_DIR, 'include_win'))
+
     return openaes_include_dirs
 
 
 def get_libraries(include_python_lib=False):
     libraries = []
-    if sys.version_info.major == 3 and sys.version_info.minor >= 5 and is_msvc():
-        # https://stackoverflow.com/questions/32418766/c-unresolved-external-symbol-sprintf-and-sscanf-in-visual-studio-2015
-        libraries = ['legacy_stdio_definitions']
 
-    if is_msvc():
-        link_py = 'python{0}{1}'.format(sys.version_info.major, sys.version_info.minor)
-    else:
-        # PEP 3149 -- ABI version tagged .so files
-        # link python lib may be: `-l python3.3` or `-l python3.6m`
-        # reference link: https://www.python.org/dev/peps/pep-3149/
-        link_py_fmt = 'python{version}{abiflags}'
-        abiflags = getattr(sys, 'abiflags', '')
-        link_py = link_py_fmt.format(
-            version=sysconfig.get_python_version(),
-            abiflags=abiflags,
-        )
+    # PEP 3149 -- ABI version tagged .so files
+    # link python lib may be: `-l python3.3` or `-l python3.6m`
+    # reference link: https://www.python.org/dev/peps/pep-3149/
+    link_py_fmt = 'python{version}{abiflags}'
+    abiflags = getattr(sys, 'abiflags', '')
+    link_py = link_py_fmt.format(
+        version=sysconfig.get_python_version(),
+        abiflags=abiflags,
+    )
 
     if include_python_lib:
         libraries.append(link_py)
 
     return libraries
-
-
-def get_exe_link_args():
-    ver = '%d.%d' % (sys.version_info.major, sys.version_info.minor)
-    if is_msvc() and (ver == '3.3' or ver == '3.4'):
-        # For Fix Manifest error, https://bugs.python.org/issue4431
-        return ['/MANIFEST']
-
-    # add -Lxxxx for link correct lib -lpython3.x
-    if is_mac():
-        ldflags = subprocess.check_output('python{ver}-config --ldflags'.format(ver=ver), shell=True)
-        ldflags = ldflags.decode('utf8')
-        return [ld for ld in ldflags.split() if ld.startswith('-L')]
-
-    return None
 
 
 include_dirs = get_include_dirs()
@@ -373,7 +310,6 @@ exe_module = Extension(
     include_dirs=include_dirs,
     libraries=get_libraries(include_python_lib=True),
     define_macros=[('PYCONCRETE_VERSION', '"%s"' % version)],
-    extra_link_args=get_exe_link_args(),
     sources=[
         join(EXE_SRC_DIR, 'pyconcrete_exe.c'),
         join(EXT_SRC_DIR, 'pyconcrete.c'),
@@ -418,12 +354,9 @@ setup(
         'Topic :: Security',
         'Topic :: Security :: Cryptography',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.3',
-        'Programming Language :: Python :: 3.4',
-        'Programming Language :: Python :: 3.5',
-        'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: Implementation :: CPython',
         'License :: OSI Approved :: Apache Software License',
     ],
