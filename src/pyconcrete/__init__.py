@@ -14,9 +14,15 @@
 # limitations under the License.
 
 import sys
-import imp
-import marshal
-from os.path import join, exists, isdir
+from importlib._bootstrap_external import (
+    FileFinder,
+    PathFinder,
+    SourcelessFileLoader,
+    _classify_pyc,
+    _compile_bytecode,
+)
+
+from . import _pyconcrete
 
 EXT_PY  = '.py'
 EXT_PYC = '.pyc'
@@ -25,7 +31,6 @@ EXT_PYE = '.pye'
 
 __all__ = ["info"]
 
-from . import _pyconcrete
 
 info = _pyconcrete.info
 encrypt_file = _pyconcrete.encrypt_file
@@ -33,89 +38,59 @@ decrypt_file = _pyconcrete.decrypt_file
 decrypt_buffer = _pyconcrete.decrypt_buffer
 
 
-class PyeLoader(object):
-    def __init__(self, is_pkg, pkg_path, full_path):
-        self.is_pkg = is_pkg
-        self.pkg_path = pkg_path
-        self.full_path = full_path
-        with open(full_path, 'rb') as f:
-            self.data = f.read()
+class PyeFileLoader(SourcelessFileLoader):
 
-    def new_module(self, fullname, path, package_path):
-        m = imp.new_module(fullname)
-        m.__file__ = path
-        m.__loader__ = self
-        if self.is_pkg:
-            m.__path__ = [package_path]
+    def get_code(self, fullname):
+        path = self.get_filename(fullname)
+        data = self.get_data(path)
 
-        if "__name__" not in m.__dict__:
-            m.__name__ = fullname
+        # Descrypt the module
+        data = decrypt_buffer(data)
 
-        return m
-
-    def load_module(self, fullname):
-        if fullname in sys.modules:  # skip reload by now ...
-            return sys.modules[fullname]
-
-        data = decrypt_buffer(self.data)  # decrypt pye
-
-        self._validate_version(data)
-
-        if sys.version_info >= (3, 7):
-            # reference python source code
-            # python/Lib/importlib/_bootstrap_external.py _code_to_timestamp_pyc() & _code_to_hash_pyc()
-            # MAGIC + HASH + TIMESTAMP + FILE_SIZE
-            magic = 16
-        elif sys.version_info >= (3, 3):
-            # reference python source code
-            # python/Lib/importlib/_bootstrap_external.py _code_to_bytecode()
-            # MAGIC + TIMESTAMP + FILE_SIZE
-            magic = 12
-        else:
-            # load pyc from memory
-            # reference http://stackoverflow.com/questions/1830727/how-to-load-compiled-python-modules-from-memory
-            # MAGIC + TIMESTAMP
-            magic = 8
-
-        code = marshal.loads(data[magic:])
-
-        m = self.new_module(fullname, self.full_path, self.pkg_path)
-        sys.modules[fullname] = m
-        exec(code, m.__dict__)
-        return m
-
-    def is_package(self, fullname):
-        return self.is_pkg
-
-    @staticmethod
-    def _validate_version(data):
-        magic = imp.get_magic()
-        ml = len(magic)
-        if data[:ml] != magic:
-            import struct
-            # convert little-endian byte string to unsigned short
-            py_magic = struct.unpack('<H', magic[:2])[0]
-            pye_magic = struct.unpack('<H', data[:2])[0]
-            raise ValueError("Python version doesn't match with magic: python(%d) != pye(%d)" % (py_magic, pye_magic))
+        # Call _classify_pyc to do basic validation of the pyc but ignore the
+        # result. There's no source to check against.
+        exc_details = {
+            'name': fullname,
+            'path': path,
+        }
+        _classify_pyc(data, fullname, exc_details)
+        return _compile_bytecode(
+            memoryview(data)[16:],
+            name=fullname,
+            bytecode_path=path,
+        )
 
 
-class PyeMetaPathFinder(object):
-    def find_module(self, fullname, path=None):
-        mod_name = fullname.split('.')[-1]
-        paths = path if path else sys.path
+class PyeFileFinder(FileFinder):
 
-        for trypath in paths:
-            mod_path = join(trypath, mod_name)
-            is_pkg = isdir(mod_path)
-            if is_pkg:
-                full_path = join(mod_path, '__init__' + EXT_PYE)
-                pkg_path = mod_path
-            else:
-                full_path = mod_path + EXT_PYE
-                pkg_path = trypath
-
-            if exists(full_path):
-                return PyeLoader(is_pkg, pkg_path, full_path)
+    def __init__(self, path, *loader_details):
+        loader_details += ([PyeFileLoader, [EXT_PYE]],)
+        super().__init__(path, *loader_details)
 
 
-sys.meta_path.insert(0, PyeMetaPathFinder())
+class PyePathFinder(PathFinder):
+
+    @classmethod
+    def find_spec(cls, fullname, path: None, target: None):
+        if path is None:
+            path = sys.path
+
+        spec = None
+
+        for entry in path:
+            spec = PyeFileFinder(entry).find_spec(fullname, target)
+
+            if spec is None:
+                continue
+
+            if spec.origin is None:
+                spec = None
+                break
+
+            if spec is not None:
+                break
+
+        return spec
+
+
+sys.meta_path.insert(0, PyePathFinder())
