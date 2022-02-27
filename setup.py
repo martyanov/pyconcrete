@@ -22,6 +22,7 @@ from distutils.core import setup, Extension, Command
 from distutils.dist import Distribution
 from distutils.command.build import build
 from distutils.command.build_ext import build_ext
+from distutils.command.clean import clean
 from distutils.command.install import install
 from src.config import TEST_DIR, SRC_DIR, EXT_SRC_DIR, EXE_SRC_DIR, SECRET_HEADER_PATH
 
@@ -209,7 +210,15 @@ class InstallEx(CmdBase, install):
         self.set_undefined_options('build',
                                    ('build_scripts', 'build_scripts'))
 
+    def _clean_build(self):
+        c = clean(self.distribution)
+        c.all = True
+        c.finalize_options()
+        c.run()
+
     def run(self):
+        self._clean_build()
+
         self.pre_process()
         ret = install.run(self)
         self.install_exe()
